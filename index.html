@@ -1,0 +1,339 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { UploadCloud, FileSpreadsheet, AlertCircle, CheckCircle2, Trash2, Download } from 'lucide-react';
+
+export default function App() {
+  const [isSheetJSReady, setIsSheetJSReady] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [reportData, setReportData] = useState(null);
+  const [fileName, setFileName] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+  const fileInputRef = useRef(null);
+
+  // Load SheetJS dynamically
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+    script.async = true;
+    script.onload = () => setIsSheetJSReady(true);
+    document.body.appendChild(script);
+
+    return () => {
+      document.body.removeChild(script);
+    };
+  }, []);
+
+  const handleDownloadSheet = (sheet) => {
+    if (sheet.total === 0) return;
+
+    let csvContent = "Baris Excel,Kode Unik\n";
+    sheet.details.forEach(detail => {
+      detail.codes.forEach(code => {
+        csvContent += `${detail.rowNumber},${code}\n`;
+      });
+    });
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `Rekap_${sheet.petugas.replace(/[^a-zA-Z0-9 -]/g, '_')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleDownloadAllExcel = () => {
+    if (!reportData || reportData.length === 0 || !window.XLSX) return;
+
+    // Membuat workbook (file Excel) baru
+    const wb = window.XLSX.utils.book_new();
+
+    // 1. Membuat Sheet Ringkasan
+    const summaryData = [["Nama Petugas", "Total Kode"]];
+    reportData.forEach(sheet => {
+      summaryData.push([sheet.petugas, sheet.total]);
+    });
+    const wsSummary = window.XLSX.utils.aoa_to_sheet(summaryData);
+    window.XLSX.utils.book_append_sheet(wb, wsSummary, "Ringkasan");
+
+    // 2. Membuat Sheet Detail untuk setiap Petugas
+    reportData.forEach(sheet => {
+      if (sheet.total > 0) {
+        const detailData = [["Baris Excel", "Kode Unik"]];
+        sheet.details.forEach(detail => {
+          detail.codes.forEach(code => {
+            detailData.push([detail.rowNumber, code]);
+          });
+        });
+        
+        const wsDetail = window.XLSX.utils.aoa_to_sheet(detailData);
+        
+        // Membersihkan nama sheet agar valid (max 31 karakter, tanpa karakter spesial)
+        let safeName = sheet.petugas.replace(/[\\/?*[\]]/g, '').substring(0, 31);
+        if (!safeName) safeName = "Sheet";
+        
+        // Mencegah duplikasi nama sheet jika terpotong
+        let finalName = safeName;
+        let counter = 1;
+        while (wb.SheetNames.includes(finalName)) {
+            finalName = `${safeName.substring(0, 27)}_${counter}`;
+            counter++;
+        }
+
+        window.XLSX.utils.book_append_sheet(wb, wsDetail, finalName);
+      }
+    });
+
+    // Mengunduh file
+    window.XLSX.writeFile(wb, "Rekap_Lengkap_Petugas.xlsx");
+  };
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    // Validate file type
+    const validExtensions = ['xlsx', 'xls', 'csv'];
+    const fileExtension = file.name.split('.').pop().toLowerCase();
+    if (!validExtensions.includes(fileExtension)) {
+      setErrorMsg('Mohon unggah file Excel yang valid (.xlsx atau .xls)');
+      return;
+    }
+
+    setFileName(file.name);
+    setErrorMsg('');
+    setIsProcessing(true);
+    setReportData(null);
+
+    // Gunakan setTimeout agar UI sempat menampilkan status "Memproses..."
+    setTimeout(() => {
+      const reader = new FileReader();
+      
+      reader.onload = (evt) => {
+        try {
+          const data = evt.target.result;
+          const workbook = window.XLSX.read(data, { type: 'binary' });
+          
+          const results = [];
+
+          // Iterasi setiap sheet (Nama Petugas)
+          workbook.SheetNames.forEach(sheetName => {
+            const worksheet = workbook.Sheets[sheetName];
+            // Konversi sheet menjadi array of arrays
+            const rows = window.XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+            
+            let totalCodesInSheet = 0;
+            let rowDetails = [];
+
+            rows.forEach((row, rowIndex) => {
+              let codesInRow = [];
+              
+              // Cek setiap sel dalam baris
+              row.forEach(cell => {
+                if (cell !== null && cell !== undefined) {
+                  const cellString = String(cell);
+                  
+                  // Regex: 3 alfanumerik, tanda strip, 3 alfanumerik (total 7 karakter)
+                  // Menggunakan negative lookbehind & lookahead agar tidak mengambil dari bagian string yang lebih panjang
+                  const regex = /(?<![a-zA-Z0-9])[a-zA-Z0-9]{3}-[a-zA-Z0-9]{3}(?![a-zA-Z0-9])/g;
+                  
+                  const matches = cellString.match(regex);
+                  if (matches) {
+                    // Konversi ke uppercase agar format seragam
+                    const upperMatches = matches.map(m => m.toUpperCase());
+                    codesInRow.push(...upperMatches);
+                  }
+                }
+              });
+
+              // Hapus duplikat kode dalam satu sel/baris yang sama jika diperlukan
+              // codesInRow = [...new Set(codesInRow)];
+
+              if (codesInRow.length > 0) {
+                totalCodesInSheet += codesInRow.length;
+                rowDetails.push({
+                  rowNumber: rowIndex + 1, // Baris di Excel biasanya mulai dari 1
+                  codes: codesInRow
+                });
+              }
+            });
+
+            results.push({
+              petugas: sheetName,
+              total: totalCodesInSheet,
+              details: rowDetails
+            });
+          });
+
+          setReportData(results);
+        } catch (err) {
+          console.error(err);
+          setErrorMsg('Terjadi kesalahan saat membaca file. Pastikan file tidak rusak.');
+        } finally {
+          setIsProcessing(false);
+        }
+      };
+
+      reader.onerror = () => {
+        setErrorMsg('Gagal membaca file.');
+        setIsProcessing(false);
+      };
+
+      reader.readAsBinaryString(file);
+    }, 100);
+  };
+
+  const resetData = () => {
+    setReportData(null);
+    setFileName('');
+    setErrorMsg('');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const totalAllCodes = reportData ? reportData.reduce((acc, curr) => acc + curr.total, 0) : 0;
+
+  // Tema warna warni untuk kartu
+  const cardTheme = [
+    { border: 'border-l-blue-500', bg: 'bg-blue-50/40', badge: 'bg-blue-100 text-blue-700', btn: 'bg-blue-100 text-blue-700 hover:bg-blue-200' },
+    { border: 'border-l-emerald-500', bg: 'bg-emerald-50/40', badge: 'bg-emerald-100 text-emerald-700', btn: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200' },
+    { border: 'border-l-purple-500', bg: 'bg-purple-50/40', badge: 'bg-purple-100 text-purple-700', btn: 'bg-purple-100 text-purple-700 hover:bg-purple-200' },
+    { border: 'border-l-amber-500', bg: 'bg-amber-50/40', badge: 'bg-amber-100 text-amber-800', btn: 'bg-amber-100 text-amber-700 hover:bg-amber-200' },
+    { border: 'border-l-rose-500', bg: 'bg-rose-50/40', badge: 'bg-rose-100 text-rose-700', btn: 'bg-rose-100 text-rose-700 hover:bg-rose-200' },
+  ];
+
+  return (
+    <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8 font-sans">
+      <div className="max-w-4xl mx-auto space-y-6">
+        
+        {/* Header */}
+        <div className="text-center space-y-2">
+          <div className="inline-flex items-center justify-center p-4 bg-white rounded-2xl shadow-md mb-2 border border-gray-100">
+            <FileSpreadsheet className="w-10 h-10 text-blue-600" />
+          </div>
+          <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight">Rekap Kode Unik</h1>
+          <p className="text-gray-500 max-w-xl mx-auto font-medium">
+            Unggah file Excel Anda untuk merekap jumlah dan detail kode unik (format: XXX-XXX) berdasarkan nama petugas (Sheet).
+          </p>
+        </div>
+
+        {/* Upload Card */}
+        <div className="bg-white p-6 rounded-3xl shadow-lg shadow-gray-200/50 border border-gray-100">
+          {!reportData && !isProcessing && (
+            <div 
+              className={`border-2 border-dashed rounded-2xl p-12 text-center transition-all duration-300 ${!isSheetJSReady ? 'border-gray-200 bg-gray-50' : 'border-blue-300 bg-blue-50/30 hover:bg-blue-50 hover:border-blue-400 hover:shadow-inner cursor-pointer'}`}
+              onClick={() => isSheetJSReady && fileInputRef.current?.click()}
+            >
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                onChange={handleFileUpload} 
+                className="hidden" 
+                accept=".xlsx, .xls, .csv"
+                disabled={!isSheetJSReady}
+              />
+              <div className={`inline-flex items-center justify-center p-4 rounded-full mb-4 transition-colors ${isSheetJSReady ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-400'}`}>
+                <UploadCloud className="w-10 h-10" />
+              </div>
+              <h3 className="text-xl font-bold text-gray-800 mb-2">
+                {isSheetJSReady ? 'Pilih atau Tarik File Excel' : 'Menyiapkan sistem...'}
+              </h3>
+              <p className="text-sm text-gray-500 font-medium">Mendukung file .xlsx dan .xls</p>
+            </div>
+          )}
+
+          {isProcessing && (
+            <div className="text-center py-16">
+              <div className="animate-spin rounded-full h-14 w-14 border-b-4 border-blue-600 mx-auto mb-4"></div>
+              <p className="text-gray-600 font-bold text-lg">Memproses dokumen...</p>
+              <p className="text-gray-400 text-sm mt-1">Mengekstrak kode dari setiap sheet</p>
+            </div>
+          )}
+
+          {errorMsg && (
+            <div className="mt-4 p-4 bg-red-50 text-red-700 rounded-xl flex items-center gap-3 border border-red-100 shadow-sm">
+              <AlertCircle className="w-6 h-6 flex-shrink-0" />
+              <p className="text-sm font-medium">{errorMsg}</p>
+            </div>
+          )}
+        </div>
+
+        {/* Results Area */}
+        {reportData && (
+          <div className="space-y-6">
+            {/* Summary Banner */}
+            <div className="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-3xl p-6 shadow-xl shadow-blue-900/10 text-white flex flex-col sm:flex-row items-center justify-between gap-6 transform transition-all hover:scale-[1.01]">
+              <div className="flex items-center gap-5">
+                <div className="p-4 bg-white/20 backdrop-blur-md rounded-2xl text-white shadow-inner">
+                  <CheckCircle2 className="w-8 h-8" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold line-clamp-1">{fileName}</h2>
+                  <p className="text-blue-100 text-sm mt-1">
+                    Ditemukan <strong className="text-white text-lg px-1">{totalAllCodes}</strong> kode unik dari {reportData.length} petugas.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 w-full sm:w-auto flex-wrap sm:flex-nowrap">
+                <button 
+                  onClick={handleDownloadAllExcel}
+                  className="px-5 py-3 bg-white text-blue-700 hover:bg-blue-50 rounded-xl text-sm font-bold transition-all shadow-md flex items-center gap-2 flex-1 sm:flex-none justify-center whitespace-nowrap active:scale-95"
+                  title="Unduh 1 file Excel berisi ringkasan dan detail tiap petugas"
+                >
+                  <Download className="w-5 h-5" />
+                  Unduh Excel Lengkap
+                </button>
+                <button 
+                  onClick={resetData}
+                  className="px-5 py-3 bg-indigo-800/50 hover:bg-indigo-800 text-white rounded-xl text-sm font-medium transition-all shadow-sm flex items-center gap-2 flex-1 sm:flex-none justify-center whitespace-nowrap active:scale-95 border border-indigo-400/30"
+                >
+                  <Trash2 className="w-5 h-5" />
+                  Ulang
+                </button>
+              </div>
+            </div>
+
+            {/* Petugas List */}
+            <div className="space-y-4 pt-2">
+              {reportData.map((sheet, index) => {
+                // Menerapkan warna secara bergiliran
+                const theme = cardTheme[index % cardTheme.length];
+                
+                return (
+                  <div 
+                    key={index} 
+                    className={`rounded-2xl shadow-sm hover:shadow-lg hover:-translate-y-1 transition-all duration-300 border border-gray-100 border-l-4 ${theme.border} ${theme.bg} overflow-hidden flex flex-col sm:flex-row sm:items-center justify-between px-6 py-5 gap-4 backdrop-blur-sm`}
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="flex flex-col">
+                        <h3 className="text-lg font-extrabold text-gray-800">Petugas: {sheet.petugas}</h3>
+                        <div className="mt-1">
+                          <span className={`inline-flex items-center px-3 py-1 rounded-lg text-xs font-bold shadow-sm ${sheet.total > 0 ? theme.badge : 'bg-gray-200 text-gray-500'}`}>
+                            {sheet.total} Kode Ditemukan
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    {sheet.total > 0 && (
+                      <button
+                        onClick={() => handleDownloadSheet(sheet)}
+                        className={`flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-bold rounded-xl transition-all shadow-sm active:scale-95 w-full sm:w-auto ${theme.btn}`}
+                        title="Unduh Rekap CSV"
+                      >
+                        <Download className="w-4 h-4" />
+                        Unduh CSV
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
