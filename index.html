@@ -9,16 +9,30 @@ export default function App() {
   const [errorMsg, setErrorMsg] = useState('');
   const fileInputRef = useRef(null);
 
-  // Load SheetJS dynamically
+  // Load SheetJS dynamically yang aman untuk React Strict Mode
   useEffect(() => {
-    const script = document.createElement('script');
-    script.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
-    script.async = true;
-    script.onload = () => setIsSheetJSReady(true);
-    document.body.appendChild(script);
+    // Jika script sudah ada (misal karena re-render), jangan tambahkan lagi
+    if (window.XLSX) {
+      setIsSheetJSReady(true);
+      return;
+    }
+
+    const scriptId = 'sheetjs-cdn-script';
+    let script = document.getElementById(scriptId);
+
+    if (!script) {
+      script = document.createElement('script');
+      script.id = scriptId;
+      script.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+      script.async = true;
+      document.body.appendChild(script);
+    }
+
+    const handleLoad = () => setIsSheetJSReady(true);
+    script.addEventListener('load', handleLoad);
 
     return () => {
-      document.body.removeChild(script);
+      script.removeEventListener('load', handleLoad);
     };
   }, []);
 
